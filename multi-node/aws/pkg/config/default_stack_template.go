@@ -1,114 +1,10 @@
 package config
 
-import (
-	"encoding/json"
-	"fmt"
-
-	"github.com/coreos/coreos-kubernetes/multi-node/aws/pkg/coreosutil"
-)
-
-var regions = []string{
-	"ap-northeast-1",
-	"ap-southeast-1",
-	"ap-southeast-2",
-	"eu-central-1",
-	"eu-west-1",
-	"sa-east-1",
-	"us-east-1",
-	"us-gov-west-1",
-	"us-west-1",
-	"us-west-2",
-}
-
-var supportedChannels = []string{
-	"alpha",
-	"beta",
-}
-
-func getRegionMap() (map[string]interface{}, error) {
-	regionMap := map[string]map[string]string{}
-
-	for _, channel := range supportedChannels {
-		regions, err := coreosutil.GetAMIData(channel)
-
-		if err != nil {
-			return nil, err
-		}
-
-		for region, amis := range regions {
-			if region == "release_info" {
-				continue
-			}
-
-			if _, ok := regionMap[region]; !ok {
-				regionMap[region] = map[string]string{}
-			}
-
-			if ami, ok := amis["hvm"]; ok {
-				regionMap[region][channel] = ami
-			}
-		}
-	}
-
-	output := map[string]interface{}{}
-
-	for key, val := range regionMap {
-		output[key] = val
-	}
-
-	return output, nil
-}
-
-func generateDefaultStackTemplate() (string, error) {
-	stackMap := map[string]interface{}{}
-
-	if err := json.Unmarshal([]byte(defaultStackTemplate), &stackMap); err != nil {
-		return "", fmt.Errorf("Error unmarshaling default stack template: %v", err)
-	}
-
-	stackMappings, ok := stackMap["Mappings"].(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("Error parsing default stack template: 'Mappings' key is not a dictionary")
-	}
-
-	var err error
-	if stackMappings["RegionMap"], err = getRegionMap(); err != nil {
-		return "", fmt.Errorf("Error generating region map: %v", err)
-	}
-
-	output, err := json.MarshalIndent(&stackMap, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("Error marshalling default stack template: %v", err)
-	}
-	return string(output), nil
-}
-
 var defaultStackTemplate = `
 
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Conditions": {
-    "EmptyAvailabilityZone": {
-      "Fn::Equals": [
-        "{{.AvailabilityZone}}",
-        ""
-      ]
-    },
-    "UseWorkerSpotInstances": {
-      "Fn::Not": [
-        {
-          "Fn::Equals": [
-            "{{.WorkerSpotPrice}}",
-            ""
-          ]
-        }
-      ]
-    }
-  },
   "Description": "kube-aws Kubernetes cluster {{.ClusterName}}",
-  "Mappings": {
-    "RegionMap" : {}
-  },
   "Resources": {
     "AlarmControllerRecover": {
       "Properties": {
@@ -148,22 +44,7 @@ var defaultStackTemplate = `
     "AutoScaleWorker": {
       "Properties": {
         "AvailabilityZones": [
-          {
-            "Fn::If": [
-              "EmptyAvailabilityZone",
-              {
-                "Fn::Select": [
-                  "0",
-                  {
-                    "Fn::GetAZs": {
-                      "Ref": "AWS::Region"
-                    }
-                  }
-                ]
-              },
-              "{{.AvailabilityZone}}"
-            ]
-          }
+          "{{.AvailabilityZone}}"
         ],
         "DesiredCapacity": "{{.WorkerCount}}",
         "HealthCheckGracePeriod": 600,
@@ -194,7 +75,12 @@ var defaultStackTemplate = `
       "Type": "AWS::AutoScaling::AutoScalingGroup",
       "UpdatePolicy" : {
 	    "AutoScalingRollingUpdate" : {
-          "MinInstancesInService" : "0",
+          "MinInstancesInService" :
+          {{if .WorkerSpotPrice}}
+            "0"
+          {{else}}
+            "{{.WorkerCount}}"
+          {{end}},
           "MaxBatchSize" : "1",
           "PauseTime" : "PT2M"
 	    }
@@ -322,22 +208,7 @@ var defaultStackTemplate = `
     },
     "InstanceController": {
       "Properties": {
-        "AvailabilityZone": {
-          "Fn::If": [
-            "EmptyAvailabilityZone",
-            {
-              "Fn::Select": [
-                "0",
-                {
-                  "Fn::GetAZs": {
-                    "Ref": "AWS::Region"
-                  }
-                }
-              ]
-            },
-            "{{.AvailabilityZone}}"
-          ]
-        },
+        "AvailabilityZone": "{{.AvailabilityZone}}",
         "BlockDeviceMappings": [
           {
             "DeviceName": "/dev/xvda",
@@ -349,15 +220,7 @@ var defaultStackTemplate = `
         "IamInstanceProfile": {
           "Ref": "IAMInstanceProfileController"
         },
-        "ImageId": {
-          "Fn::FindInMap": [
-            "RegionMap",
-            {
-              "Ref": "AWS::Region"
-            },
-            "{{.ReleaseChannel}}"
-          ]
-        },
+        "ImageId": "{{.AMI}}",
         "InstanceType": "{{.ControllerInstanceType}}",
         "KeyName": "{{.KeyName}}",
         "NetworkInterfaces": [
@@ -414,15 +277,7 @@ var defaultStackTemplate = `
         "IamInstanceProfile": {
           "Ref": "IAMInstanceProfileWorker"
         },
-        "ImageId": {
-          "Fn::FindInMap": [
-            "RegionMap",
-            {
-              "Ref": "AWS::Region"
-            },
-            "{{.ReleaseChannel}}"
-          ]
-        },
+        "ImageId": "{{.AMI}}",
         "InstanceType": "{{.WorkerInstanceType}}",
         "KeyName": "{{.KeyName}}",
         "SecurityGroups": [
@@ -430,15 +285,9 @@ var defaultStackTemplate = `
             "Ref": "SecurityGroupWorker"
           }
         ],
-        "SpotPrice": {
-          "Fn::If": [
-            "UseWorkerSpotInstances",
-            "{{.WorkerSpotPrice}}",
-            {
-              "Ref": "AWS::NoValue"
-            }
-          ]
-        },
+        {{if .WorkerSpotPrice}}
+        "SpotPrice": {{.WorkerSpotPrice}},
+        {{end}}
         "UserData": "{{.UserData.Worker.String}}"
       },
       "Type": "AWS::AutoScaling::LaunchConfiguration"
@@ -651,22 +500,7 @@ var defaultStackTemplate = `
     },
     "Subnet": {
       "Properties": {
-        "AvailabilityZone": {
-          "Fn::If": [
-            "EmptyAvailabilityZone",
-            {
-              "Fn::Select": [
-                "0",
-                {
-                  "Fn::GetAZs": {
-                    "Ref": "AWS::Region"
-                  }
-                }
-              ]
-            },
-            "{{.AvailabilityZone}}"
-          ]
-        },
+        "AvailabilityZone": "{{.AvailabilityZone}}",
         "CidrBlock": "{{.InstanceCIDR}}",
         "MapPublicIpOnLaunch": true,
         "Tags": [

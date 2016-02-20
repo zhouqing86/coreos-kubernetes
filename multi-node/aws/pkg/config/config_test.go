@@ -6,7 +6,8 @@ import (
 
 const MinimalConfigYaml = `externalDNSName: test-external-dns-name
 keyName: test-key-name
-region: test-region
+region: us-west-1
+availabilityZone: us-west-1c
 clusterName: test-cluster-name
 `
 

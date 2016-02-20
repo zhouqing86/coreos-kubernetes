@@ -69,7 +69,7 @@ type Config struct {
 	SecureAPIServers  string `yaml:"-"`
 	ETCDEndpoints     string `yaml:"-"`
 	APIServerEndpoint string `yaml:"-"`
-
+	AMI               string `yaml:"-"`
 	//Subconfig
 	TLSConfig     *TLSConfig            `yaml:"-"`
 	UserData      *UserDataConfig       `yaml:"-"`
@@ -86,6 +86,9 @@ func (cfg *Config) valid() error {
 	}
 	if cfg.Region == "" {
 		return errors.New("region must be set")
+	}
+	if cfg.AvailabilityZone == "" {
+		return errors.New("availabilityZone must be set")
 	}
 	if cfg.ClusterName == "" {
 		return errors.New("clusterName must be set")
@@ -167,11 +170,6 @@ func (cfg *Config) GenerateDefaultAssets() error {
 
 	kubeConfigBuffer := bytes.NewBufferString(defaultKubeConfigTemplate)
 	if _, err := cfg.KubeConfig.ReadFrom(kubeConfigBuffer); err != nil {
-		return err
-	}
-
-	defaultStackTemplate, err := generateDefaultStackTemplate()
-	if err != nil {
 		return err
 	}
 
@@ -294,6 +292,11 @@ func newConfigFromBytes(d []byte) (*Config, error) {
 	out.APIServers = fmt.Sprintf("http://%s:8080", out.ControllerIP)
 	out.SecureAPIServers = fmt.Sprintf("https://%s:443", out.ControllerIP)
 	out.APIServerEndpoint = fmt.Sprintf("https://%s", out.ExternalDNSName)
+
+	var err error
+	if out.AMI, err = getAMI(out.Region, out.ReleaseChannel); err != nil {
+		return nil, fmt.Errorf("Error getting region map: %v", err)
+	}
 
 	return out, nil
 }

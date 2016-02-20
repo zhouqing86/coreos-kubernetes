@@ -22,7 +22,7 @@ keyName: {{.KeyName}}
 region: {{.Region}}
 
 # Availability Zone to provision Kubernetes cluster
-#availabilityZone:
+availabilityZone: {{.AvailabilityZone}}
 
 # Instance type for controller node
 #controllerInstanceType: m3.medium
